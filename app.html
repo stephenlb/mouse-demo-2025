@@ -2,55 +2,54 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>PubNub Mouse Sharing</title>
+  <title>PubNub Multi-Touch Sharing</title>
   <!-- Style: Dark background, canvas covering full page, star animation -->
   <style>
     html, body {
-      margin: 0; 
-      padding: 0; 
-      overflow: hidden; 
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
       background: radial-gradient(ellipse at center, #111 0%, #000 100%);
-      height: 100vh; 
-      width: 100vw; 
-      user-select: none; 
-      cursor: crosshair; 
+      height: 100vh;
+      width: 100vw;
+      user-select: none;
+      cursor: crosshair;
       font-family: sans-serif;
     }
     #starfield {
       position: fixed;
-      top:0; 
-      left:0; 
-      width:100%;
-      height:100%;
-      pointer-events: none; 
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
       z-index: 0;
-      background: transparent 
-        url('./background.png') repeat center center; 
+      background: transparent url('./background.png') repeat center center;
       animation: twinkle 100s linear infinite;
       opacity: 0.4;
     }
     @keyframes twinkle {
-      0% { background-position: 0 0; }
+      0%   { background-position: 0 0; }
       100% { background-position: 1000px 1000px; }
     }
     #gameCanvas {
-      position: fixed; 
-      top: 0; 
-      left: 0; 
-      width: 100vw; 
-      height: 100vh; 
-      z-index: 1; 
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
       display: block;
     }
     #pubnub-logo {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        width: 200px;
-        height: 70px;
-        z-index: 100;
-        background: url('pubnub-logo.png') no-repeat center center;
-        background-size: contain;
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 200px;
+      height: 70px;
+      z-index: 100;
+      background: url('pubnub-logo.png') no-repeat center center;
+      background-size: contain;
     }
     #info {
       position: fixed;
@@ -73,10 +72,12 @@
   <canvas id="gameCanvas"></canvas>
   <!-- Info box -->
   <div id="info">
-    Move your mouse to share its position in real time via PubNub!
+    Move your mouse or touch the screen to share positions via PubNub in real time!
   </div>
-  <script src='./pubnub.js'></script>
-  
+
+  <!-- Include your PubNub library -->
+  <script src="./pubnub.js"></script>
+
   <!-- PubNub SSE from UNPKG (async iterator style) -->
   <script type="module">
     // Basic setup
@@ -106,60 +107,21 @@
     // Subscribe to the channel (note the array form!)
     const subscription = pubnub.subscribe({ channel: CHANNEL, messages: receiveMessages });
 
-    // Maintain a dictionary of remote cursors (by userId)
-    // Each entry: { x, y, targetX, targetY, color }
+    // Maintains a dictionary of remote cursors, keyed by userId.
+    // Each userId holds another dictionary of touches/cursors, keyed by touchID.
+    // Example: cursors[userX][touchID] = { x, y, targetX, targetY, color }
     const cursors = {};
 
-    // Generate a random color for this user
+    // A random color for all of this user's cursors
     const myColor = randomColor();
 
-    // Listen for mouse moves, publish local position
-    let lastPublishTime = 0;
-    window.addEventListener('mousemove', (e) => {
-      const now = Date.now();
-      // For demonstration, let’s publish ~ every 50 ms
-      if (now - lastPublishTime > 50) {
-        pubnub.publish({
-          channel: CHANNEL,
-          message: {
-            userId: userId,
-            data: { x: e.clientX, y: e.clientY, color: myColor }
-          }
-        });
-        lastPublishTime = now;
-      }
-    });
+    // Holds all local cursors (mouse + touches), keyed by an identifier.
+    // For the mouse, we'll use "mouse" as the identifier.
+    // For each touch, we'll use its touch.identifier as the key.
+    const localCursors = {};
 
-    // Receive messages with an async iterator
-    async function receiveMessages(message) {
-        console.log('[SUBSCRIPTION EVENT]', message);
-        
-        if (!message || !message.userId || !message.data) return;
-        const incomingUserId = message.userId;
-        const data = message.data;
-        if (!incomingUserId || !data) return;
-
-        // Ignore our own published messages
-        if (incomingUserId === userId) return;
-
-        // If new user, create cursor data; otherwise update
-        if (!cursors[incomingUserId]) {
-          cursors[incomingUserId] = {
-            x: data.x,
-            y: data.y,
-            targetX: data.x,
-            targetY: data.y,
-            color: data.color,
-          };
-        } else {
-          cursors[incomingUserId].targetX = data.x;
-          cursors[incomingUserId].targetY = data.y;
-        }
-    }
-    receiveMessages();
-
-    // Local cursor data
-    let localCursor = {
+    // Initialize our mouse cursor in the localCursors dictionary
+    localCursors.mouse = {
       x: 0,
       y: 0,
       targetX: 0,
@@ -167,32 +129,148 @@
       color: myColor
     };
 
-    // Update our local cursor target on mousemove
-    window.addEventListener('mousemove', e => {
-      localCursor.targetX = e.clientX;
-      localCursor.targetY = e.clientY;
+    // Event listeners for mouse
+    let lastPublishTime = 0;
+    window.addEventListener('mousemove', (e) => {
+      // Update mouse cursor
+      localCursors.mouse.targetX = e.clientX;
+      localCursors.mouse.targetY = e.clientY;
+
+      // Rate-limit publications (~ every 50ms)
+      maybePublish();
     });
 
-    // Touch support: update local cursor target on touchmove
-    window.addEventListener('touchmove', e => {
-      e.preventDefault();
-      const touch = e.touches[0];
-      localCursor.targetX = touch.clientX;
-      localCursor.targetY = touch.clientY;
-    });
+    // Touch event listeners
+    // Touchstart: create a new cursor for each new touch
+    window.addEventListener('touchstart', (e) => {
+      for (const touch of e.changedTouches) {
+        localCursors[touch.identifier] = {
+          x: touch.clientX,
+          y: touch.clientY,
+          targetX: touch.clientX,
+          targetY: touch.clientY,
+          color: myColor
+        };
+      }
+      maybePublish();
+    }, { passive: false });
+
+    // Touchmove: update existing cursors' positions
+    window.addEventListener('touchmove', (e) => {
+      for (const touch of e.changedTouches) {
+        if (localCursors[touch.identifier]) {
+          localCursors[touch.identifier].targetX = touch.clientX;
+          localCursors[touch.identifier].targetY = touch.clientY;
+        }
+      }
+      maybePublish();
+    }, { passive: false });
+
+    // Touchend/touchcancel: remove finished touches
+    window.addEventListener('touchend', removeLocalTouchByEvent, { passive: false });
+    window.addEventListener('touchcancel', removeLocalTouchByEvent, { passive: false });
+    function removeLocalTouchByEvent(e) {
+      for (const touch of e.changedTouches) {
+        if (localCursors[touch.identifier]) {
+          delete localCursors[touch.identifier];
+        }
+      }
+      maybePublish(); 
+    }
+
+    // Publish local cursors to PubNub, but rate-limit to ~ every 50 ms
+    function maybePublish() {
+      const now = Date.now();
+      if (now - lastPublishTime < 50) return; // skip if too soon
+      lastPublishTime = now;
+
+      // Build an array of { id, x, y } for all local cursors
+      const touchesArray = Object.entries(localCursors).map(([id, cursor]) => {
+        return {
+          id: id,
+          x: cursor.targetX,
+          y: cursor.targetY
+        };
+      });
+
+      pubnub.publish({
+        channel: CHANNEL,
+        message: {
+          userId: userId,
+          data: {
+            color: myColor,
+            touches: touchesArray
+          }
+        }
+      });
+    }
+
+    // Receive and handle messages with an async iterator
+    async function receiveMessages(message) {
+      console.log('[SUBSCRIPTION EVENT]', message);
+      if (!message || !message.userId || !message.data) return;
+
+      const incomingUserId = message.userId;
+      const data = message.data;
+      if (!incomingUserId || !data) return;
+
+      // Ignore our own published messages
+      if (incomingUserId === userId) return;
+
+      // If this user doesn't exist, create empty dictionary
+      if (!cursors[incomingUserId]) {
+        cursors[incomingUserId] = {};
+      }
+
+      // For every touch in the incoming data, update or create a cursor
+      if (data.touches && Array.isArray(data.touches)) {
+        const remoteTouches = data.touches.map(t => t.id);
+        
+        data.touches.forEach(touch => {
+          const tId = touch.id;
+          // If new touch, create brand new cursor
+          if (!cursors[incomingUserId][tId]) {
+            cursors[incomingUserId][tId] = {
+              x: touch.x,
+              y: touch.y,
+              targetX: touch.x,
+              targetY: touch.y,
+              color: data.color
+            };
+          } else {
+            // Otherwise update target only
+            cursors[incomingUserId][tId].targetX = touch.x;
+            cursors[incomingUserId][tId].targetY = touch.y;
+          }
+        });
+
+        // Remove any cursor that wasn't in this new message
+        // (The remote user has ended that touch)
+        Object.keys(cursors[incomingUserId]).forEach(existingTouchId => {
+          if (!remoteTouches.includes(existingTouchId)) {
+            delete cursors[incomingUserId][existingTouchId];
+          }
+        });
+      }
+    }
+    receiveMessages(); // Start the async iterator
 
     // Animation loop: smoothly move each cursor toward its target and draw it
     function animate() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Update/draw our own cursor
-      smoothMove(localCursor);
-      drawCursor(localCursor.x, localCursor.y, localCursor.color, true);
-
-      // Update/draw remote cursors
-      for (const [uid, cursor] of Object.entries(cursors)) {
+      // Update/draw local cursors
+      for (const [id, cursor] of Object.entries(localCursors)) {
         smoothMove(cursor);
-        drawCursor(cursor.x, cursor.y, cursor.color, false);
+        drawCursor(cursor.x, cursor.y, cursor.color, /* isLocal */ true);
+      }
+
+      // Update/draw remote cursors for each remote user
+      for (const [uid, userTouches] of Object.entries(cursors)) {
+        for (const [touchId, cursor] of Object.entries(userTouches)) {
+          smoothMove(cursor);
+          drawCursor(cursor.x, cursor.y, cursor.color, /* isLocal */ false);
+        }
       }
 
       requestAnimationFrame(animate);
@@ -218,10 +296,11 @@
       ctx.restore();
     }
 
-    // Helper: get a random HSL color
+    // Helper: generate a random HSL color
     function randomColor() {
-      return 'hsl(' + (Math.random()*360).toFixed(0) + ', 70%, 50%)';
+      return 'hsl(' + (Math.random() * 360).toFixed(0) + ', 70%, 50%)';
     }
+
   </script>
 </body>
 </html>
